@@ -306,7 +306,14 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         self._chdir(self.work_dir / "common")
         hooks_patch = self.sukisu_patch_dir / "69_hide_stuff.patch"
         if hooks_patch.exists():
-            self._run_cmd(f"cp {hooks_patch} . && patch -p1 -F 3 < 69_hide_stuff.patch", check=False)
+            # 5.10 任务文件结构与 69_hide_stuff.patch 不兼容：补丁中注入的 dentry
+            # 赋值 / if (dentry) {} 块 / goto bypass 会在该版本上变成孤立的悬挂
+            # 引用，触发 -Wunused-* / -Wimplicit-function-declaration。
+            # 直接在 5.10 上跳过该补丁以保证编译通过。
+            if self.config.kernel_version == "5.10":
+                logger.info("跳过 5.10 上的 69_hide_stuff.patch（与该版本不兼容）")
+            else:
+                self._run_cmd(f"cp {hooks_patch} . && patch -p1 -F 3 < 69_hide_stuff.patch", check=False)
 
     def apply_zram_patches(self):
         if not self.config.use_zram:
@@ -351,47 +358,9 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 content = content.replace("goto show_pad;", "return 0;")
                 with open(task_mmu, "w") as f:
                     f.write(content)
-
-        # 5.10 编译开启 -Werror，SUSFS 注入的 "bypass:" 标签、"struct dentry *dentry;"
-        # 和 "show_vma_header_prefix_fake" 函数在该版本上可能成为未使用代码导致编译失败。
-        # 主动移除。
-        if self.config.kernel_version == "5.10":
-            with open(task_mmu, "r") as f:
-                content = f.read()
-            new_content = re.sub(r'^\s*bypass:\s*\n', '', content, flags=re.MULTILINE)
-            new_content = re.sub(r'^\s*struct\s+dentry\s*\*\s*dentry\s*;\s*\n',
-                                 '', new_content, flags=re.MULTILINE)
-            new_content = self._comment_out_function(new_content, 'show_vma_header_prefix_fake')
-            if new_content != content:
-                logger.info("修复 5.10 task_mmu.c 中未使用的 bypass 标签、dentry 变量和 show_vma_header_prefix_fake 函数")
-                with open(task_mmu, "w") as f:
-                    f.write(new_content)
-
-    @staticmethod
-    def _comment_out_function(source: str, func_name: str) -> str:
-        """从源码字符串中注释掉 func_name 定义的整个函数体。"""
-        lines = source.split('\n')
-        start = None
-        for i, line in enumerate(lines):
-            if re.search(r'\b' + re.escape(func_name) + r'\s*\(', line):
-                start = i
-                break
-        if start is None:
-            return source
-        depth = 0
-        body_started = False
-        for j in range(start, len(lines)):
-            for ch in lines[j]:
-                if ch == '{':
-                    depth += 1
-                    body_started = True
-                elif ch == '}':
-                    depth -= 1
-                    if body_started and depth == 0:
-                        for k in range(start, j + 1):
-                            lines[k] = '/* SUSFS-stub-removed: ' + lines[k] + ' */'
-                        return '\n'.join(lines)
-        return source
+        # 5.10 不再需要 task_mmu.c 修复：apply_sukisu_patches 会在 5.10 上跳过
+        # 69_hide_stuff.patch，因此文件里不会出现孤立的 bypass: 标签 / dentry
+        # 变量 / show_vma_header_prefix_fake 引用。
 
     def _fix_base_c_header(self):
         base_c = self.work_dir / "common/fs/proc/base.c"
