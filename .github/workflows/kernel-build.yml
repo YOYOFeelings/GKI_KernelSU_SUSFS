@@ -146,7 +146,7 @@ jobs:
         uses: actions/cache@v5
         with:
           path: ~/.ccache
-          key: ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-${{ github.sha }}
+          key: ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-${{ github.sha }}-v2
           restore-keys: |
             ${{ github.event.inputs.android_version }}-${{ github.event.inputs.kernel_version }}-${{ github.event.inputs.sub_level }}-ccache-
 

@@ -192,7 +192,7 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         self._chdir(self.work_dir)
         formatted_branch = self.config.formatted_branch
 
-        self._run_cmd(f"$REPO init --depth=1 --u https://android.googlesource.com/kernel/manifest "
+        self._run_cmd(f"$REPO init --depth=1 -u https://android.googlesource.com/kernel/manifest "
                      f"-b common-{formatted_branch} --repo-rev=v2.16", check=False)
 
         remote = subprocess.run(f"git ls-remote https://android.googlesource.com/kernel/common {formatted_branch}",
@@ -351,6 +351,47 @@ CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
                 content = content.replace("goto show_pad;", "return 0;")
                 with open(task_mmu, "w") as f:
                     f.write(content)
+
+        # 5.10 编译开启 -Werror，SUSFS 注入的 "bypass:" 标签、"struct dentry *dentry;"
+        # 和 "show_vma_header_prefix_fake" 函数在该版本上可能成为未使用代码导致编译失败。
+        # 主动移除。
+        if self.config.kernel_version == "5.10":
+            with open(task_mmu, "r") as f:
+                content = f.read()
+            new_content = re.sub(r'^\s*bypass:\s*\n', '', content, flags=re.MULTILINE)
+            new_content = re.sub(r'^\s*struct\s+dentry\s*\*\s*dentry\s*;\s*\n',
+                                 '', new_content, flags=re.MULTILINE)
+            new_content = self._comment_out_function(new_content, 'show_vma_header_prefix_fake')
+            if new_content != content:
+                logger.info("修复 5.10 task_mmu.c 中未使用的 bypass 标签、dentry 变量和 show_vma_header_prefix_fake 函数")
+                with open(task_mmu, "w") as f:
+                    f.write(new_content)
+
+    @staticmethod
+    def _comment_out_function(source: str, func_name: str) -> str:
+        """从源码字符串中注释掉 func_name 定义的整个函数体。"""
+        lines = source.split('\n')
+        start = None
+        for i, line in enumerate(lines):
+            if re.search(r'\b' + re.escape(func_name) + r'\s*\(', line):
+                start = i
+                break
+        if start is None:
+            return source
+        depth = 0
+        body_started = False
+        for j in range(start, len(lines)):
+            for ch in lines[j]:
+                if ch == '{':
+                    depth += 1
+                    body_started = True
+                elif ch == '}':
+                    depth -= 1
+                    if body_started and depth == 0:
+                        for k in range(start, j + 1):
+                            lines[k] = '/* SUSFS-stub-removed: ' + lines[k] + ' */'
+                        return '\n'.join(lines)
+        return source
 
     def _fix_base_c_header(self):
         base_c = self.work_dir / "common/fs/proc/base.c"
